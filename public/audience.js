@@ -31,14 +31,14 @@ const watchStream = async () => {
 
   } catch (error) {
     console.log(error);
-    alert('Unable to connect to live stream');
+    alert('Unable to connect to livestream');
   }
 }
 
 const leaveStream = () => {
   player.disconnect();
   watchingStream = false;
-  startEndButton.innerHTML = 'start stream';
+  startEndButton.innerHTML = 'watch stream';
   startEndButton.classList.replace('bg-red-500', 'bg-green-500');
   startEndButton.classList.replace('hover:bg-red-500', 'hover:bg-green-700');
 }

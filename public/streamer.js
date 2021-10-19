@@ -76,9 +76,7 @@ const endStream = async () => {
       const data = await response.json();
       room.disconnect();
       streaming = false;
-
-      // const liveNotification = document.getElementById('liveNotification');
-      stream.remove(liveNotification);
+      liveNotification.remove();
 
       startEndButton.innerHTML = 'start stream';
       startEndButton.classList.replace('bg-red-500', 'bg-green-500');
@@ -108,7 +106,7 @@ const startOrEndStream = async (event) => {
 
     } catch (error) {
       console.log(error);
-      alert('Unable to start live stream.');
+      alert('Unable to start livestream.');
       startEndButton.innerHTML = 'start stream';
       startEndButton.disabled = false;
       identityInput.disabled = false;

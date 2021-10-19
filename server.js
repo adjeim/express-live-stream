@@ -2,8 +2,6 @@ import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import express from 'express';
-import axios from 'axios';
-import qs from 'qs';
 import crypto from 'crypto';
 import twilio from 'twilio';
 
@@ -16,20 +14,13 @@ const port = 5000;
 
 const AccessToken = twilio.jwt.AccessToken;
 const VideoGrant = AccessToken.VideoGrant;
+const PlaybackGrant = AccessToken.PlaybackGrant;
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const apiKey = process.env.TWILIO_API_KEY_SID;
 const apiKeySecret = process.env.TWILIO_API_KEY_SECRET;
 
 const twilioClient = twilio(apiKey, apiKeySecret, { accountSid: accountSid });
-
-const auth = {
-  username: apiKey,
-  password: apiKeySecret
-}
-
-const playerStreamerUrl = `https://media.twilio.com/v1/PlayerStreamers`;
-const mediaProcessorUrl = `https://media.twilio.com/v1/MediaProcessors`;
 
 app.use(express.json());
 
@@ -54,10 +45,6 @@ app.get('/watch', (req, res) => {
 app.post('/start', async (req, res) => {
   const streamName  = req.body.streamName;
 
-  let roomId;
-  let playerStreamerId;
-  let mediaProcessorId;
-
   try {
     // Create the WebRTC Go video room, PlayerStreamer, and MediaProcessors
     const room = await twilioClient.video.rooms.create({
@@ -65,37 +52,27 @@ app.post('/start', async (req, res) => {
       type: 'go'
     });
 
-    roomId = room.sid;
+    const playerStreamer = await twilioClient.media.playerStreamer.create();
 
-    const playerStreamerResponse = await axios({
-      url: playerStreamerUrl,
-      method: 'post',
-      auth: auth
-    });
-
-    playerStreamerId = playerStreamerResponse.data.sid;
-
-    const mediaProcessorData = {
-      Extension: 'video-composer-v1-preview',
-      ExtensionContext: JSON.stringify({
+    const mediaProcessor = await twilioClient.media.mediaProcessor.create({
+      extension: 'video-composer-v1',
+      extensionContext: JSON.stringify({
+        identity: 'video-composer-v1',
         room: {
-          name: roomId
+          name: room.sid
         },
-        outputs: [playerStreamerId],
+        outputs: [
+          playerStreamer.sid
+        ],
       })
-    }
+    })
 
-    const mediaProcessorResponse = await axios({
-      url: mediaProcessorUrl,
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      method: 'post',
-      auth: auth,
-      data: qs.stringify(mediaProcessorData)
+    return res.status(200).send({
+      roomId: room.sid,
+      streamName: streamName,
+      playerStreamerId: playerStreamer.sid,
+      mediaProcessorId: mediaProcessor.sid
     });
-
-    mediaProcessorId = mediaProcessorResponse.data.sid;
-
-    return res.status(200).send({roomId, streamName, playerStreamerId, mediaProcessorId});
 
   } catch(error) {
     return res.status(400).send({
@@ -118,25 +95,9 @@ app.post('/end', async (req, res) => {
   const mediaProcessorId = streamDetails.mediaProcessorId;
 
   try {
-    const mediaProcessorResponse = await axios({
-      url: `${mediaProcessorUrl}/${mediaProcessorId}`,
-      method: 'post',
-      auth: auth,
-      data: qs.stringify({
-        Status: 'ENDED',
-      })
-    });
-
-    const playerStreamerResponse = await axios({
-      url: `${playerStreamerUrl}/${playerStreamerId}`,
-      method: 'post',
-      auth: auth,
-      data: qs.stringify({
-        Status: 'ENDED',
-      })
-    });
-
-    const completedRoom = await twilioClient.video.rooms(roomId).update({status: 'completed'});
+    await twilioClient.media.mediaProcessor(mediaProcessorId).update({status: 'ended'});
+    await twilioClient.media.playerStreamer(playerStreamerId).update({status: 'ended'});
+    await twilioClient.video.rooms(roomId).update({status: 'completed'});
 
     return res.status(200).send({
       message: `Successfully ended stream ${streamName}`
@@ -146,8 +107,8 @@ app.post('/end', async (req, res) => {
     return res.status(400).send({
       message: `Unable to end stream`,
       error
-    })
-  }
+    });
+  };
 })
 
 /**
@@ -194,57 +155,41 @@ app.post('/audienceToken', async (req, res) => {
 
   try {
     // Get the first player streamer
-    const playerStreamerResponse = await axios({
-      url: `${playerStreamerUrl}/?Status=STARTED`,
-      method: 'get',
-      auth: auth,
-    });
-
-    const playerStreamerList = playerStreamerResponse.data.player_streamers;
+    const playerStreamerList = await twilioClient.media.playerStreamer.list({status: 'started'});
     const playerStreamer = playerStreamerList.length ? playerStreamerList[0] : null;
 
     // If no one is streaming, return a message
     if (!playerStreamer){
-      res.status(200).send({
+      return res.status(200).send({
         message: `No one is streaming right now`,
       })
     }
 
-    // Otherwise create a PlaybackGrant for the live stream
-    const playerStreamerTokenResponse = await axios({
-      url: `${playerStreamerUrl}/${playerStreamer.sid}/PlaybackGrant`,
-      method: 'post',
-      auth: auth,
-      data: qs.stringify({
-        Ttl: 60,
-      })
-    });
-
-    const playbackGrant = playerStreamerTokenResponse.data.grant;
-
-    // Create an access token
+    // Otherwise create an access token with a PlaybackGrant for the livestream
     const token = new AccessToken(accountSid, apiKey, apiKeySecret);
 
-    // Add the playback grant and the user's identity to the token
-    token.identity = identity;
+    // Create a playback grant and attach it to the access token
+    const playbackGrant = await twilioClient.media.playerStreamer(playerStreamer.sid).playbackGrant().create({ttl: 60});
 
-    token.addGrant({
-      key: 'player',
-      player: playbackGrant,
-      toPayload: () => playbackGrant,
+    const wrappedPlaybackGrant = new PlaybackGrant({
+      grant: playbackGrant.grant
     });
+
+    token.addGrant(wrappedPlaybackGrant);
+    token.identity = identity;
 
     // Serialize the token to a JWT and return it to the client side
     return res.send({
       token: token.toJwt()
     });
+
   } catch (error) {
     res.status(400).send({
       message: `Unable to view livestream`,
       error
-    })
-  }
-})
+    });
+  };
+});
 
 // Start the Express server
 app.listen(port, async () => {
